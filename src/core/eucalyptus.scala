@@ -4,16 +4,12 @@ import java.text.SimpleDateFormat
 import scala.reflect._, macros._
 import language.experimental.macros
 
-object output {
-  implicit final val stdout: Destination[String] = System.out.println(_)
-  implicit final val stderr: Destination[String] = System.err.println(_)
-}
-
-object formats {
+object `package` {
+  implicit final val Stdout: Destination[String] = System.out.println(_)
+  implicit final val Stderr: Destination[String] = System.err.println(_)
+  
   implicit final val Raw: Format[String, String] = (msg, _, _, _, _, _) => msg
-  implicit final val Default: Format[String, String] = StandardFormat
-
-  private object StandardFormat extends Format[String, String] {
+  implicit object Standard extends Format[String, String] {
     private def pad(str: String, length: Int) =
       if(str.length < length) str+(" "*(length - str.length)) else str.take(length)
    
