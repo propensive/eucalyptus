@@ -2,13 +2,17 @@ package eucalyptus
 
 import java.text.SimpleDateFormat
 import scala.reflect._, macros._
-import language.experimental.macros, language.higherKinds
+import language.experimental.macros
 
 object `package` {
   implicit final val Stdout: Destination[String] = System.out.print(_)
   implicit final val Stderr: Destination[String] = System.err.print(_)
   implicit final val Raw: Format[String, String] = (msg, _, _, _, _, _) => msg
-  
+ 
+  object MessageOnly extends Format[String, String] {
+    def entry(msg: String, tag: Tag, timestamp: Long, level: Level, lineNo: Int, source: String): String = msg
+  }
+
   implicit object Standard extends Format[String, String] {
     private def pad(str: String, length: Int) =
       if(str.length < length) str+(" "*(length - str.length)) else str.take(length)
@@ -23,7 +27,7 @@ object `package` {
       sb.append(' ')
       sb.append(pad(tag.name, 10))
       sb.append(' ')
-      sb.append(pad(s"$source:$lineNo", 15))
+      sb.append(pad(s"$source:$lineNo", 20))
       sb.append(' ')
       sb.append(msg)
       sb.append('\n')
