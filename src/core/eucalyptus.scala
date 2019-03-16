@@ -41,7 +41,13 @@ object Log {
   thread.setDaemon(true)
   thread.start()
 
-  def apply[T, Msg](routes: Route[Msg]*)(block: Logger[Msg] => T): T = {
+  def apply[T, Msg](routes: Route[Msg]*): Logger[Msg] = {
+    val logger: Logger[Msg] = new Logger(routes: _*)
+    synchronized { loggers = loggers :+ logger }
+    logger
+  }
+
+  def borrow[T, Msg](routes: Route[Msg]*)(block: Logger[Msg] => T): T = {
     val logger: Logger[Msg] = new Logger(routes: _*)
     synchronized { loggers = loggers :+ logger }
     try block(logger) finally synchronized { loggers = loggers.filter(_ != logger) }
