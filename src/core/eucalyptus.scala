@@ -22,13 +22,10 @@ package eucalyptus
 import scala.reflect._, macros._
 import language.experimental.macros
 
-object Logger {
+object Log {
   val interval: Long = 100L
-  private[this] var continue: Boolean = true
-  private[this] var loggers: Vector[Logger[_]] = Vector()
-
-  def register(logger: Logger[_]): Unit = synchronized { loggers = loggers :+ logger }
-  def unregister(logger: Logger[_]): Unit = synchronized { loggers = loggers.filter(_ != logger) }
+  private var continue: Boolean = true
+  private var loggers: Vector[Logger[_]] = Vector()
 
   private[this] val thread: Thread = new Thread() {
     override def run(): Unit = {
@@ -44,65 +41,40 @@ object Logger {
   thread.setDaemon(true)
   thread.start()
 
-  def apply[Msg](routes: Route[Msg]*): Logger[Msg] = {
+  def apply[T, Msg](routes: Route[Msg]*)(block: Logger[Msg] => T): T = {
     val logger: Logger[Msg] = new Logger(routes: _*)
-    register(logger)
-    logger
+    synchronized { loggers = loggers :+ logger }
+    try block(logger) finally synchronized { loggers = loggers.filter(_ != logger) }
   }
 
   def shutdown(): Unit = continue = false
-}
 
-case class Route[Msg](handle: Log[Msg] => Unit, min: Log.Level = Log.Level.Trace, max: Log.Level = Log.Level.Fatal) {
-  private[eucalyptus] def process(msg: Log[Msg]): Unit = if(min.value <= msg.level.value && max.value >= msg.level.value) handle(msg)
-}
+  class Logger[Msg] private[eucalyptus] (routes: Route[Msg]*) {
 
-class Logger[Msg] private[eucalyptus] (routes: Route[Msg]*) {
-
-  private[this] var buffer: Vector[Log[Msg]] = Vector()
-  private[this] var closed: Boolean = false
-  
-  def +(route: Route[Msg]) = Logger(route +: routes: _*)
-  def -(route: Route[Msg]) = Logger(routes.filter(_ != route): _*)
-
-  def trace(msg: Msg): Unit = macro Macros.doLog
-  def debug(msg: Msg): Unit = macro Macros.doLog
-  def check(msg: Msg): Unit = macro Macros.doLog
-  def alert(msg: Msg): Unit = macro Macros.doLog
-  def error(msg: Msg): Unit = macro Macros.doLog
-  def fatal(msg: Msg): Unit = macro Macros.doLog
-
-  def log(msg: Log[Msg]): Unit = synchronized { buffer = buffer :+ msg }
-
-  def shutdown(): Unit = closed = true
-
-  private[eucalyptus] def updates(): Vector[Log[Msg]] = synchronized {
-    val snapshot = buffer
-    buffer = Vector()
-    snapshot
-  }
-  
-  private[eucalyptus] def processUpdates(): Unit = updates().foreach { msg =>
-    routes.foreach(_.process(msg))
-  }
-}
-
-object Macros {
-  def doLog(c: blackbox.Context)(msg: c.Tree): c.Tree = {
-    import c._, universe._
+    private[this] var buffer: Vector[Log[Msg]] = Vector()
+    private[this] var closed: Boolean = false
     
-    val lineNo = enclosingPosition.line
-    val source = enclosingPosition.source.toString
-    val q"$base.$method($_)" = macroApplication // "
-    val levelInt = Log.Level.names.indexOf(method.toString.toUpperCase)
-    val level = q"_root_.eucalyptus.Log.Level($levelInt)"
-    val now = q"_root_.java.lang.System.currentTimeMillis"
-    
-    q"$base.log(_root_.eucalyptus.Log($now, $level, $msg, $source, $lineNo))"
-  }
-}
+    def trace(msg: Msg): Unit = macro Macros.doLog
+    def debug(msg: Msg): Unit = macro Macros.doLog
+    def check(msg: Msg): Unit = macro Macros.doLog
+    def alert(msg: Msg): Unit = macro Macros.doLog
+    def error(msg: Msg): Unit = macro Macros.doLog
+    def fatal(msg: Msg): Unit = macro Macros.doLog
 
-object Log {
+    def log(msg: Log[Msg]): Unit = synchronized { buffer = buffer :+ msg }
+
+    def shutdown(): Unit = closed = true
+
+    private[eucalyptus] def updates(): Vector[Log[Msg]] = synchronized {
+      val snapshot = buffer
+      buffer = Vector()
+      snapshot
+    }
+    
+    private[eucalyptus] def processUpdates(): Unit = updates().foreach { msg =>
+      routes.foreach(_.process(msg))
+    }
+  }
 
   object Level {
     final val Trace = Level(0)
@@ -122,3 +94,22 @@ object Log {
 }
 
 case class Log[Msg](timestamp: Long, level: Log.Level, message: Msg, source: String, lineNo: Int)
+
+case class Route[Msg](handle: Log[Msg] => Unit, min: Log.Level = Log.Level.Trace, max: Log.Level = Log.Level.Fatal) {
+  private[eucalyptus] def process(msg: Log[Msg]): Unit = if(min.value <= msg.level.value && max.value >= msg.level.value) handle(msg)
+}
+
+object Macros {
+  def doLog(c: blackbox.Context)(msg: c.Tree): c.Tree = {
+    import c._, universe._
+    
+    val lineNo = enclosingPosition.line
+    val source = enclosingPosition.source.toString
+    val q"$base.$method($_)" = macroApplication // "
+    val levelInt = Log.Level.names.indexOf(method.toString.toUpperCase)
+    val level = q"_root_.eucalyptus.Log.Level($levelInt)"
+    val now = q"_root_.java.lang.System.currentTimeMillis"
+    
+    q"$base.log(_root_.eucalyptus.Log($now, $level, $msg, $source, $lineNo))"
+  }
+}
