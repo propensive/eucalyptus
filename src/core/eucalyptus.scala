@@ -1,103 +1,124 @@
+/*
+  
+  Eucalyptus, version 1.0.0. Copyright 2019 Jon Pretty, Propensive Ltd.
+
+  The primary distribution site is: https://propensive.com/
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+  this file except in compliance with the License. You may obtain a copy of the
+  License at
+  
+      http://www.apache.org/licenses/LICENSE-2.0
+ 
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+  License for the specific language governing permissions and limitations under
+  the License.
+
+*/
 package eucalyptus
 
-import java.text.SimpleDateFormat
 import scala.reflect._, macros._
 import language.experimental.macros
 
-object `package` {
-  implicit final val Stdout: Destination[String] = System.out.print(_)
-  implicit final val Stderr: Destination[String] = System.err.print(_)
-  implicit final val Raw: Format[String, String] = (msg, _, _, _, _, _) => msg
- 
-  object MessageOnly extends Format[String, String] {
-    def entry(msg: String, tag: Tag, timestamp: Long, level: Level, lineNo: Int, source: String): String = msg
-  }
+object Logger {
+  val interval: Long = 100L
+  private[this] var continue: Boolean = true
+  private[this] var loggers: Vector[Logger[_]] = Vector()
 
-  implicit object Standard extends Format[String, String] {
-    private def pad(str: String, length: Int) =
-      if(str.length < length) str+(" "*(length - str.length)) else str.take(length)
-   
-    private val dateFormat: SimpleDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS ")
-    
-    def entry(msg: String, tag: Tag, timestamp: Long, level: Level, lineNo: Int,
-        source: String): String = {
-      val sb = new StringBuilder()
-      sb.append(dateFormat.format(timestamp))
-      sb.append(level.name)
-      sb.append(' ')
-      sb.append(pad(tag.name, 10))
-      sb.append(' ')
-      sb.append(pad(s"$source:$lineNo", 20))
-      sb.append(' ')
-      sb.append(msg)
-      sb.append('\n')
-      sb.toString
+  def register(logger: Logger[_]): Unit = synchronized { loggers = loggers :+ logger }
+  def unregister(logger: Logger[_]): Unit = synchronized { loggers = loggers.filter(_ != logger) }
+
+  private[this] val thread: Thread = new Thread() {
+    override def run(): Unit = {
+      while(continue) {
+        val t0 = System.currentTimeMillis
+        loggers.foreach(_.processUpdates())
+        Thread.sleep(interval - System.currentTimeMillis + t0)
+      }
+
+      join()
     }
   }
+  thread.setDaemon(true)
+  thread.start()
+
+  def apply[Msg](routes: Route[Msg]*): Logger[Msg] = {
+    val logger: Logger[Msg] = new Logger(routes: _*)
+    register(logger)
+    logger
+  }
+
+  def shutdown(): Unit = continue = false
 }
 
-case class Engine[Msg, Out](loggers: Logger[Msg, Out]*) {
-  def trace(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
-  def debug(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
-  def audit(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
-  def issue(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
-  def error(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
-  def fault(msg: Msg)(implicit tag: Tag): Unit = macro Macros.doLog
+case class Route[Msg](handle: Log[Msg] => Unit, min: Log.Level = Log.Level.Trace, max: Log.Level = Log.Level.Fatal) {
+  private[eucalyptus] def process(msg: Log[Msg]): Unit = if(min.value <= msg.level.value && max.value >= msg.level.value) handle(msg)
 }
 
-final case class Level(value: Int) extends AnyVal { final def name: String = Level.names(value) }
+class Logger[Msg] private[eucalyptus] (routes: Route[Msg]*) {
 
-object Level {
-  final val List(trace, debug, audit, issue, error, fault) = List.range(0, 6).map(Level(_))
+  private[this] var buffer: Vector[Log[Msg]] = Vector()
+  private[this] var closed: Boolean = false
   
-  private[eucalyptus] final val names: Array[String] =
-    Array("TRACE", "DEBUG", "AUDIT", "ISSUE", "ERROR", "FAULT")
-}
+  def +(route: Route[Msg]) = Logger(route +: routes: _*)
+  def -(route: Route[Msg]) = Logger(routes.filter(_ != route): _*)
 
-trait Destination[T] { def consume(msg: T): Unit }
+  def trace(msg: Msg): Unit = macro Macros.doLog
+  def debug(msg: Msg): Unit = macro Macros.doLog
+  def check(msg: Msg): Unit = macro Macros.doLog
+  def alert(msg: Msg): Unit = macro Macros.doLog
+  def error(msg: Msg): Unit = macro Macros.doLog
+  def fatal(msg: Msg): Unit = macro Macros.doLog
 
-trait Format[-Msg, +Out] {
-  def entry(msg: Msg, tag: Tag, timestamp: Long, level: Level, lineNo: Int, source: String): Out
-}
+  def log(msg: Log[Msg]): Unit = synchronized { buffer = buffer :+ msg }
 
-final case class Logger[Msg, Out](min: Level, max: Level, tagSet: Set[Tag],
-    format: Format[Msg, Out], destination: Destination[Out]) {
+  def shutdown(): Unit = closed = true
 
-  final def above(level: Level): Logger[Msg, Out] = copy(level, max, tagSet, format, destination)
-  final def below(level: Level): Logger[Msg, Out] = copy(min, level, tagSet, format, destination)
-}
-
-object Tag { implicit final val Default = Tag("") }
-
-object Log {
-  def apply(tags: Tag*): LogTags = LogTags(tags.to[Set])
-
-  case class LogTags(tagSet: Set[Tag]) {
-    def as[Msg, Out](format: Format[Msg, Out]): LogTagsFormat[Msg, Out] =
-      LogTagsFormat(tagSet, format)
+  private[eucalyptus] def updates(): Vector[Log[Msg]] = synchronized {
+    val snapshot = buffer
+    buffer = Vector()
+    snapshot
   }
-
-  case class LogTagsFormat[Msg, Out](tagSet: Set[Tag], format: Format[Msg, Out]) {
-    def to(destination: Destination[Out]): Logger[Msg, Out] =
-      Logger(Level.trace, Level.fault, tagSet, format, destination)
+  
+  private[eucalyptus] def processUpdates(): Unit = updates().foreach { msg =>
+    routes.foreach(_.process(msg))
   }
 }
-
-final case class Tag(name: String) extends AnyVal
 
 object Macros {
-  def doLog(c: blackbox.Context)(msg: c.Tree)(tag: c.Tree): c.Tree = {
+  def doLog(c: blackbox.Context)(msg: c.Tree): c.Tree = {
     import c._, universe._
+    
     val lineNo = enclosingPosition.line
     val source = enclosingPosition.source.toString
-    val q"$base.$method($_)($_)" = macroApplication // "
-    val levelInt = Level.names.indexOf(method.toString.toUpperCase)
-    val level = q"_root_.eucalyptus.Level($levelInt)"
+    val q"$base.$method($_)" = macroApplication // "
+    val levelInt = Log.Level.names.indexOf(method.toString.toUpperCase)
+    val level = q"_root_.eucalyptus.Log.Level($levelInt)"
     val now = q"_root_.java.lang.System.currentTimeMillis"
     
-    q"""$base.loggers.foreach { log =>
-          if($levelInt >= log.min.value && $levelInt <= log.max.value && log.tagSet.contains($tag))
-            log.destination.consume(log.format.entry($msg, $tag, $now, $level, $lineNo, $source))
-        }"""
+    q"$base.log(_root_.eucalyptus.Log($now, $level, $msg, $source, $lineNo))"
   }
 }
+
+object Log {
+
+  object Level {
+    final val Trace = Level(0)
+    final val Debug = Level(1)
+    final val Check = Level(2)
+    final val Alert = Level(3)
+    final val Error = Level(4)
+    final val Fatal = Level(5)
+
+    private[eucalyptus] final val names: Array[String] =
+      Array("TRACE", "DEBUG", "CHECK", "ALERT", "ERROR", "FATAL")
+  }
+
+  final case class Level(value: Int) extends AnyVal { final def name: String = Level.names(value) }
+
+  implicit val ordering: Ordering[Log[_]] = Ordering[Long].on(_.timestamp)
+}
+
+case class Log[Msg](timestamp: Long, level: Log.Level, message: Msg, source: String, lineNo: Int)
