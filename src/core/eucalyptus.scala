@@ -96,10 +96,12 @@ object Log {
 
   final case class Level(value: Int) extends AnyVal { final def name: String = Level.names(value) }
 
-  implicit val ordering: Ordering[Log[_]] = Ordering[Long].on(_.timestamp)
+  implicit val ordering: Ordering[Log[_]] = Ordering[Long].on(_.timestamp.value)
 }
 
-case class Log[Msg](timestamp: Long, level: Log.Level, message: Msg, source: String, lineNo: Int)
+case class Log[Msg](timestamp: Timestamp, level: Log.Level, message: Msg, source: String, lineNo: Int)
+
+case class Timestamp(value: Long) extends AnyVal
 
 case class Route[Msg](handle: Log[Msg] => Unit, min: Log.Level = Log.Level.Trace, max: Log.Level = Log.Level.Fatal) {
   private[eucalyptus] def process(msg: Log[Msg]): Unit = if(min.value <= msg.level.value && max.value >= msg.level.value) handle(msg)
