@@ -101,6 +101,10 @@ object Log {
 
 case class Log[Msg](timestamp: Timestamp, level: Log.Level, message: Msg, source: String, lineNo: Int)
 
+object Timestamp {
+  def now(): Timestamp = Timestamp(System.currentTimeMillis)
+}
+
 case class Timestamp(value: Long) extends AnyVal
 
 case class Route[Msg](handle: Log[Msg] => Unit, min: Log.Level = Log.Level.Trace, max: Log.Level = Log.Level.Fatal) {
@@ -116,7 +120,7 @@ object Macros {
     val q"$base.$method($_)" = macroApplication // "
     val levelInt = Log.Level.names.indexOf(method.toString.toUpperCase)
     val level = q"_root_.eucalyptus.Log.Level($levelInt)"
-    val now = q"_root_.java.lang.System.currentTimeMillis"
+    val now = q"_root_.eucalyptus.Timestamp.now()"
     
     q"$base.log(_root_.eucalyptus.Log($now, $level, $msg, $source, $lineNo))"
   }
