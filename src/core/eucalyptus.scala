@@ -69,7 +69,9 @@ object Log {
 
     def log(msg: Log[Msg]): Unit = synchronized { buffer = buffer :+ msg }
 
-    def shutdown(): Unit = closed = true
+    def shutdown(): Unit = synchronized { buffer = buffer :+ null }
+
+    def terminate(): Unit = ()
 
     private[eucalyptus] def updates(): Vector[Log[Msg]] = synchronized {
       val snapshot = buffer
@@ -78,7 +80,10 @@ object Log {
     }
     
     private[eucalyptus] def processUpdates(): Unit = updates().foreach { msg =>
-      routes.foreach(_.process(msg))
+      if(msg == null) {
+        terminate()
+        closed = true
+      } else routes.foreach(_.process(msg))
     }
   }
 
